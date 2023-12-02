@@ -1,3 +1,5 @@
+import sys
+sys.path.insert(0, ".")
 from streamlit_helpers import *
 from st_keyup import st_keyup
 from sgm.modules.diffusionmodules.sampling import EulerAncestralSampler
