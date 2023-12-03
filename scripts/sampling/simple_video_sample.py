@@ -1,5 +1,7 @@
 import math
 import os
+import sys
+sys.path.insert(0, '.')
 from glob import glob
 from pathlib import Path
 from typing import Optional
@@ -13,9 +15,9 @@ from omegaconf import OmegaConf
 from PIL import Image
 from torchvision.transforms import ToTensor
 
-from scripts.util.detection.nsfw_and_watermark_dectection import \
-    DeepFloydDataFiltering
-from sgm.inference.helpers import embed_watermark
+#from scripts.util.detection.nsfw_and_watermark_dectection import \
+#    DeepFloydDataFiltering
+#from sgm.inference.helpers import embed_watermark
 from sgm.util import default, instantiate_from_config
 
 
@@ -64,12 +66,7 @@ def sample(
     else:
         raise ValueError(f"Version {version} does not exist.")
 
-    model, filter = load_model(
-        model_config,
-        device,
-        num_frames,
-        num_steps,
-    )
+    model = load_model(model_config, device, num_frames, num_steps)
     torch.manual_seed(seed)
 
     path = Path(input_path)
@@ -99,7 +96,7 @@ def sample(
             w, h = image.size
 
             if h % 64 != 0 or w % 64 != 0:
-                width, height = map(lambda x: x - x % 64, (w, h))
+                width, height = 1024, 576
                 image = image.resize((width, height))
                 print(
                     f"WARNING: Your image is of size {h}x{w} which is not divisible by 64. We are resizing to {height}x{width}!"
@@ -189,8 +186,8 @@ def sample(
                     (samples.shape[-1], samples.shape[-2]),
                 )
 
-                samples = embed_watermark(samples)
-                samples = filter(samples)
+                #samples = embed_watermark(samples)
+                #samples = filter(samples)
                 vid = (
                     (rearrange(samples, "t c h w -> t h w c") * 255)
                     .cpu()
@@ -270,8 +267,8 @@ def load_model(
     else:
         model = instantiate_from_config(config.model).to(device).eval()
 
-    filter = DeepFloydDataFiltering(verbose=False, device=device)
-    return model, filter
+    #filter = DeepFloydDataFiltering(verbose=False, device=device)
+    return model#, filter
 
 
 if __name__ == "__main__":
