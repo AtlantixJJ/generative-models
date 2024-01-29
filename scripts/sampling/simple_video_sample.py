@@ -14,11 +14,25 @@ from fire import Fire
 from omegaconf import OmegaConf
 from PIL import Image
 from torchvision.transforms import ToTensor
+from moviepy.editor import ImageSequenceClip
 
 #from scripts.util.detection.nsfw_and_watermark_dectection import \
 #    DeepFloydDataFiltering
 #from sgm.inference.helpers import embed_watermark
 from sgm.util import default, instantiate_from_config
+
+
+def write_video(output_path, frames, fps=24):
+    """Convert a list of frames to an MP4 video using MoviePy.
+    Args:
+        output_path: Path to the output video file.
+        frames: List of image frames (PIL images or NumPy arrays).
+        fps: Frames per second for the output video.
+    """
+    clip = ImageSequenceClip(frames, fps=fps)
+    clip.write_videofile(output_path,
+        codec='libx264', fps=fps,
+        preset='ultrafast', threads=1)
 
 
 def sample(
@@ -104,6 +118,7 @@ def sample(
 
             image = ToTensor()(image)
             image = image * 2.0 - 1.0
+            image[:, :, 576:] *= 0
 
         image = image.unsqueeze(0).to(device)
         H, W = image.shape[2:]
@@ -179,25 +194,14 @@ def sample(
                 os.makedirs(output_folder, exist_ok=True)
                 base_count = len(glob(os.path.join(output_folder, "*.mp4")))
                 video_path = os.path.join(output_folder, f"{base_count:06d}.mp4")
-                writer = cv2.VideoWriter(
-                    video_path,
-                    cv2.VideoWriter_fourcc(*"MP4V"),
-                    fps_id + 1,
-                    (samples.shape[-1], samples.shape[-2]),
-                )
 
-                #samples = embed_watermark(samples)
-                #samples = filter(samples)
                 vid = (
                     (rearrange(samples, "t c h w -> t h w c") * 255)
                     .cpu()
                     .numpy()
                     .astype(np.uint8)
                 )
-                for frame in vid:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    writer.write(frame)
-                writer.release()
+                write_video(video_path, list(vid))
 
 
 def get_unique_embedder_keys_from_conditioner(conditioner):

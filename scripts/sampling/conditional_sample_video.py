@@ -61,6 +61,7 @@ def read_images(input_path: str):
 
             image = ToTensor()(image)
             image = image * 2.0 - 1.0
+            image = image[:, :, :576]
         image = image.unsqueeze(0)
         images.append(image)
     return images
@@ -154,31 +155,33 @@ def sample(
     if fps_id > 30:
         print("WARNING: Large fps value! This may lead to suboptimal performance.")
 
-    value_dict = {}
-    value_dict["motion_bucket_id"] = motion_bucket_id
-    value_dict["fps_id"] = fps_id
-    value_dict["cond_aug"] = cond_aug
-
-    os.makedirs(output_folder, exist_ok=True)
-    base_count = len(glob(os.path.join(output_folder, "*.mp4")))
-    video_path = os.path.join(output_folder, f"{base_count:06d}.mp4")
-    n_half = decoding_t // 2
+    n_half = decoding_t
     n_batch = math.floor(num_frames / n_half) # discard last batch for convenience
     x0_init = init_frames[:2 * n_half]
     frames = []
     with torch.no_grad():
         with torch.autocast(device):
-            for i in tqdm(range(n_batch - 1)):
-                cur_cond_frames = init_frames[i * n_half : (i + 2) * n_half]
+            for i in tqdm(range(n_batch - 2)):
+                cur_cond_frames = init_frames[i * n_half : (i + 2) * n_half].clone()
+                value_dict = {}
+                value_dict["motion_bucket_id"] = motion_bucket_id
+                value_dict["fps_id"] = fps_id
+                value_dict["cond_aug"] = cond_aug
                 value_dict["cond_frames_without_noise"] = cur_cond_frames
                 value_dict["cond_frames"] = cur_cond_frames + cond_aug * torch.randn_like(cur_cond_frames)
                 samples = infer_video(model, value_dict, x0_init, sigma_cond, decoding_t, device)
                 x0_init = torch.cat([
                     samples[n_half:],
-                    init_frames[(i + 1) * n_half : (i + 2) * n_half]])
+                    init_frames[(i + 2) * n_half : (i + 3) * n_half]])
+                #x0_init = init_frames[(i + 1) * n_half : (i + 3) * n_half].clone()
                 frames.append(samples[:n_half].cpu())
     frames = (torch.cat(frames, dim=0) * 0.5 + 0.5).clamp(0, 1)
     vid = (rearrange(frames, "t c h w -> t h w c") * 255).cpu().numpy().astype(np.uint8)
+
+    os.makedirs(output_folder, exist_ok=True)
+    args = f'fps{fps_id}_motion{motion_bucket_id}_condaug{cond_aug}_sigma{sigma_cond}'
+    base_count = len(glob(os.path.join(output_folder, "*.mp4")))
+    video_path = os.path.join(output_folder, f"{base_count:06d}_{args}.mp4")
     #for i, frame in enumerate(vid):
     #    imwrite(os.path.join(output_folder, f"{base_count:06d}_{i:03d}.png"), frame)
     write_video(video_path, list(vid))
@@ -205,13 +208,13 @@ def infer_video(model, value_dict, x0_init, sigma_cond, decoding_t, device):
 
     for k in ["crossattn", "concat"]:
         if uc[k].shape[0] < num_frames:
+            print("Use repeated conditioning for all frames")
             # 1 in, num_frames out
             uc[k] = repeat(uc[k], "b ... -> b t ...", t=num_frames)
             c[k] = repeat(c[k], "b ... -> b t ...", t=num_frames)
             uc[k] = rearrange(uc[k], "b t ... -> (b t) ...", t=num_frames)
             c[k] = rearrange(c[k], "b t ... -> (b t) ...", t=num_frames)
 
-    #randn = torch.randn(shape, device=device)
     z0_init = model.encode_first_stage(x0_init)
     noisy_z0 = z0_init + sigma_cond * torch.randn_like(z0_init)
     noisy_z0 /= (1 + sigma_cond ** 2) ** 0.5
