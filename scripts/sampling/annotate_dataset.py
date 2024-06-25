@@ -21,6 +21,24 @@ from sgm.util import default, instantiate_from_config
 from torchvision.transforms import ToTensor
 
 
+def get_nersemble_files():
+    data_dir = '/data/hs_generative_model_data/NeRSemble/data'
+    participants = os.listdir(data_dir)
+    participants.sort()
+    seq_dir = 'extra_sequences'
+
+    for p_id in participants:
+        p_dir = os.path.join(data_dir, p_id, seq_dir)
+        scenes = [s for s in os.listdir(p_dir)]
+        scenes.sort()
+        for v in scenes:
+            frame_paths = glob(os.path.join(p_dir, v, 'frame_*'))
+            frame_paths.sort()
+            for frame_path in frame_paths:
+                path = os.path.join(frame_path, 'images-2fps', 'cam_220700191.jpg')
+                if os.path.exists(path):
+                    yield path
+
 def sample(
     input_path: str = "assets/test_image.png",  # Can either be image file or folder with image files
     num_frames: Optional[int] = None,  # 21 for SV3D
@@ -36,6 +54,7 @@ def sample(
     elevations_deg: Union[float, List[float]] = 10.0,  # For SV3D
     azimuths_deg: Union[float, List[float]] = None,  # For SV3D
     image_frame_ratio: Optional[float] = None,
+    rank=0, n_rank=1,
     verbose: Optional[bool] = False,
 ):
     """
@@ -99,7 +118,11 @@ def sample(
 
     path = Path(input_path)
     all_img_paths = []
-    if path.is_file():
+    if input_path == 'nersemble':
+        all_img_paths = [f for f in get_nersemble_files()]
+        print(len(all_img_paths))
+        all_img_paths = all_img_paths[rank::n_rank]
+    elif path.is_file():
         if any([input_path.endswith(x) for x in ["jpg", "jpeg", "png"]]):
             all_img_paths = [input_path]
         else:
@@ -117,7 +140,13 @@ def sample(
     else:
         raise ValueError
 
-    for input_img_path in all_img_paths:
+    for _index, input_img_path in enumerate(all_img_paths):
+        print(f"{rank}/{n_rank} processing {_index}/{len(all_img_paths)} {input_img_path}")
+        output_folder = input_img_path.replace(
+            '/data/hs_generative_model_data/NeRSemble/data',
+            '/home/jianjinx/data/My3D/data/nersemble_sv3d')
+        output_folder = output_folder[:output_folder.rfind('/')]
+
         if "sv3d" in version:
             image = Image.open(input_img_path)
             if image.mode == "RGBA":
@@ -251,9 +280,9 @@ def sample(
                 os.makedirs(output_folder, exist_ok=True)
                 base_count = len(glob(os.path.join(output_folder, "*.mp4")))
 
-                imageio.imwrite(
-                    os.path.join(output_folder, f"{base_count:06d}.jpg"), input_image
-                )
+                #imageio.imwrite(
+                #    os.path.join(output_folder, f"{base_count:06d}.jpg"), input_image
+                #)
 
                 samples = embed_watermark(samples)
                 samples = filter(samples)
@@ -266,8 +295,7 @@ def sample(
                 #video_path = os.path.join(output_folder, f"{base_count:06d}.mp4")
                 #imageio.mimwrite(video_path, vid)
                 for i in range(vid.shape[0]):
-                    imageio.imwrite(os.path.join(output_folder, f'{i}.jpg'), vid[i])
-
+                    imageio.imwrite(os.path.join(output_folder, f'sv3d_{i:03d}.jpg'), vid[i])
 
 def get_unique_embedder_keys_from_conditioner(conditioner):
     return list(set([x.input_key for x in conditioner.embedders]))

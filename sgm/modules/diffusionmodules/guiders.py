@@ -105,7 +105,7 @@ class TrianglePredictionGuider(LinearPredictionGuider):
         max_scale: float,
         num_frames: int,
         min_scale: float = 1.0,
-        period: float | List[float] = 1.0,
+        period: Union[float, List[float]] = 1.0,
         period_fusing: Literal["mean", "multiply", "max"] = "max",
         additional_cond_keys: Optional[Union[List[str], str]] = None,
     ):
