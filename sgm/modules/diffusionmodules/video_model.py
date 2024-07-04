@@ -439,6 +439,14 @@ class VideoUNet(nn.Module):
             zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
         )
 
+        self.return_attn_probs = False
+
+    def set_return_attn_probs(self, flag=True):
+        self.return_attn_probs = flag
+        for m in self.children():
+            if hasattr(m, 'set_return_attn_probs'):
+                m.set_return_attn_probs(flag)
+
     def forward(
         self,
         x: th.Tensor,

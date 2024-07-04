@@ -15,8 +15,6 @@ from fire import Fire
 from omegaconf import OmegaConf
 from PIL import Image
 from rembg import remove
-from scripts.util.detection.nsfw_and_watermark_dectection import DeepFloydDataFiltering
-from sgm.inference.helpers import embed_watermark
 from sgm.util import default, instantiate_from_config
 from torchvision.transforms import ToTensor
 
@@ -33,7 +31,7 @@ def sample(
     decoding_t: int = 14,  # Number of frames decoded at a time! This eats most VRAM. Reduce if necessary.
     device: str = "cuda",
     output_folder: Optional[str] = None,
-    elevations_deg: Union[float, List[float]] = 10.0,  # For SV3D
+    elevations_deg: Optional[float | List[float]] = 10.0,  # For SV3D
     azimuths_deg: Optional[List[float]] = None,  # For SV3D
     image_frame_ratio: Optional[float] = None,
     verbose: Optional[bool] = False,
@@ -42,32 +40,7 @@ def sample(
     Simple script to generate a single sample conditioned on an image `input_path` or multiple images, one for each
     image file in folder `input_path`. If you run out of VRAM, try decreasing `decoding_t`.
     """
-
-    if version == "svd":
-        num_frames = default(num_frames, 14)
-        num_steps = default(num_steps, 25)
-        output_folder = default(output_folder, "outputs/simple_video_sample/svd/")
-        model_config = "scripts/sampling/configs/svd.yaml"
-    elif version == "svd_xt":
-        num_frames = default(num_frames, 25)
-        num_steps = default(num_steps, 30)
-        output_folder = default(output_folder, "outputs/simple_video_sample/svd_xt/")
-        model_config = "scripts/sampling/configs/svd_xt.yaml"
-    elif version == "svd_image_decoder":
-        num_frames = default(num_frames, 14)
-        num_steps = default(num_steps, 25)
-        output_folder = default(
-            output_folder, "outputs/simple_video_sample/svd_image_decoder/"
-        )
-        model_config = "scripts/sampling/configs/svd_image_decoder.yaml"
-    elif version == "svd_xt_image_decoder":
-        num_frames = default(num_frames, 25)
-        num_steps = default(num_steps, 30)
-        output_folder = default(
-            output_folder, "outputs/simple_video_sample/svd_xt_image_decoder/"
-        )
-        model_config = "scripts/sampling/configs/svd_xt_image_decoder.yaml"
-    elif version == "sv3d_u":
+    if version == "sv3d_u":
         num_frames = 21
         num_steps = default(num_steps, 50)
         output_folder = default(output_folder, "outputs/simple_video_sample/sv3d_u/")
@@ -95,13 +68,12 @@ def sample(
     else:
         raise ValueError(f"Version {version} does not exist.")
 
-    model, filter = load_model(
+    model = load_model(
         model_config,
         device,
         num_frames,
         num_steps,
-        verbose,
-    )
+        verbose)
     torch.manual_seed(seed)
 
     path = Path(input_path)
@@ -125,53 +97,39 @@ def sample(
         raise ValueError
 
     for input_img_path in all_img_paths:
-        if "sv3d" in version:
-            image = Image.open(input_img_path)
-            if image.mode == "RGBA":
-                pass
-            else:
-                # remove bg
-                image.thumbnail([768, 768], Image.Resampling.LANCZOS)
-                image = remove(image.convert("RGBA"), alpha_matting=True)
-
-            # resize object in frame
-            image_arr = np.array(image)
-            in_w, in_h = image_arr.shape[:2]
-            ret, mask = cv2.threshold(
-                np.array(image.split()[-1]), 0, 255, cv2.THRESH_BINARY
-            )
-            x, y, w, h = cv2.boundingRect(mask)
-            max_size = max(w, h)
-            side_len = (
-                int(max_size / image_frame_ratio)
-                if image_frame_ratio is not None
-                else in_w
-            )
-            padded_image = np.zeros((side_len, side_len, 4), dtype=np.uint8)
-            center = side_len // 2
-            padded_image[
-                center - h // 2 : center - h // 2 + h,
-                center - w // 2 : center - w // 2 + w,
-            ] = image_arr[y : y + h, x : x + w]
-            # resize frame to 576x576
-            rgba = Image.fromarray(padded_image).resize((576, 576), Image.LANCZOS)
-            # white bg
-            rgba_arr = np.array(rgba) / 255.0
-            rgb = rgba_arr[..., :3] * rgba_arr[..., -1:] + (1 - rgba_arr[..., -1:])
-            input_image = Image.fromarray((rgb * 255).astype(np.uint8))
-
+        image = Image.open(input_img_path)
+        if image.mode == "RGBA":
+            pass
         else:
-            with Image.open(input_img_path) as image:
-                if image.mode == "RGBA":
-                    input_image = image.convert("RGB")
-                w, h = image.size
+            # remove bg
+            image.thumbnail([768, 768], Image.Resampling.LANCZOS)
+            image = remove(image.convert("RGBA"), alpha_matting=True)
 
-                if h % 64 != 0 or w % 64 != 0:
-                    width, height = map(lambda x: x - x % 64, (w, h))
-                    input_image = input_image.resize((width, height))
-                    print(
-                        f"WARNING: Your image is of size {h}x{w} which is not divisible by 64. We are resizing to {height}x{width}!"
-                    )
+        # resize object in frame
+        image_arr = np.array(image)
+        in_w, in_h = image_arr.shape[:2]
+        ret, mask = cv2.threshold(
+            np.array(image.split()[-1]), 0, 255, cv2.THRESH_BINARY
+        )
+        x, y, w, h = cv2.boundingRect(mask)
+        max_size = max(w, h)
+        side_len = (
+            int(max_size / image_frame_ratio)
+            if image_frame_ratio is not None
+            else in_w
+        )
+        padded_image = np.zeros((side_len, side_len, 4), dtype=np.uint8)
+        center = side_len // 2
+        padded_image[
+            center - h // 2 : center - h // 2 + h,
+            center - w // 2 : center - w // 2 + w,
+        ] = image_arr[y : y + h, x : x + w]
+        # resize frame to 576x576
+        rgba = Image.fromarray(padded_image).resize((576, 576), Image.LANCZOS)
+        # white bg
+        rgba_arr = np.array(rgba) / 255.0
+        rgb = rgba_arr[..., :3] * rgba_arr[..., -1:] + (1 - rgba_arr[..., -1:])
+        input_image = Image.fromarray((rgb * 255).astype(np.uint8))
 
         image = ToTensor()(input_image)
         image = image * 2.0 - 1.0
@@ -182,10 +140,7 @@ def sample(
         F = 8
         C = 4
         shape = (num_frames, C, H // F, W // F)
-        if (H, W) != (576, 1024) and "sv3d" not in version:
-            print(
-                "WARNING: The conditioning frame you provided is not 576x1024. This leads to suboptimal performance as model was only trained on 576x1024. Consider increasing `cond_aug`."
-            )
+
         if (H, W) != (576, 576) and "sv3d" in version:
             print(
                 "WARNING: The conditioning frame you provided is not 576x576. This leads to suboptimal performance as model was only trained on 576x576."
@@ -343,8 +298,7 @@ def load_model(
     else:
         model = instantiate_from_config(config.model).to(device).eval()
 
-    filter = DeepFloydDataFiltering(verbose=False, device=device)
-    return model, filter
+    return model
 
 
 if __name__ == "__main__":
