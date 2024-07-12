@@ -39,6 +39,7 @@ from sgm.util import append_dims, default, instantiate_from_config
 from torch import autocast
 from torchvision import transforms
 from torchvision.utils import make_grid, save_image
+from rembg import remove
 
 
 @st.cache_resource()
@@ -490,10 +491,14 @@ def load_img(
     if center_crop:
         transform.append(transforms.CenterCrop(size))
     transform.append(transforms.ToTensor())
-    transform.append(transforms.Lambda(lambda x: 2.0 * x - 1.0))
+    transform.append(transforms.Lambda(lambda x: 2.0 * x - 1.0)) # -1 to 1
 
     transform = transforms.Compose(transform)
     img = transform(image)[None, ...]
+    # remove background
+    image_pil = Image.fromarray((img[0].cpu().numpy().transpose(1, 2, 0) + 1) / 2 * 255)
+    image_pil = remove(image_pil)
+    img = transforms.ToTensor()(image_pil)[None, ...] * 2.0 - 1
     st.text(f"input min/max/mean: {img.min():.3f}/{img.max():.3f}/{img.mean():.3f}")
     return img
 
