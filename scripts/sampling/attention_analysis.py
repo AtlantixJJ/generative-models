@@ -71,7 +71,7 @@ def sample(
         num_frames = 21
         num_steps = default(num_steps, 50)
         output_folder = default(output_folder, "outputs/simple_video_sample/sv3d_u/")
-        model_config = "scripts/sampling/configs/sv3d_u.yaml"
+        model_config = "scripts/sampling/configs/sv3d_u_attn.yaml"
         cond_aug = 1e-5
     elif version == "sv3d_p":
         num_frames = 21
@@ -247,7 +247,10 @@ def sample(
                     return model.denoiser(
                         model.model, input, sigma, c, **additional_model_inputs
                     )
+                
+                return model, additional_model_inputs, randn, c, uc, value_dict
 
+                """
                 samples_z = model.sampler(denoiser, randn, cond=c, uc=uc)
                 model.en_and_decode_n_samples_a_time = decoding_t
                 samples_x = model.decode_first_stage(samples_z)
@@ -270,10 +273,11 @@ def sample(
                     .numpy()
                     .astype(np.uint8)
                 )
-                video_path = os.path.join(output_folder, f"{base_count:06d}.mp4")
-                imageio.mimwrite(video_path, vid)
+                #video_path = os.path.join(output_folder, f"{base_count:06d}.mp4")
+                #imageio.mimwrite(video_path, vid)
                 for i in range(vid.shape[0]):
                     imageio.imwrite(os.path.join(output_folder, f'{i}.jpg'), vid[i])
+                """
 
 
 def get_unique_embedder_keys_from_conditioner(conditioner):
@@ -348,4 +352,44 @@ def load_model(
 
 
 if __name__ == "__main__":
-    Fire(sample)
+    #model, additional_model_inputs, randn, c, uc, value_dict = Fire(sample)
+    torch.set_grad_enabled(False)
+
+    model, additional_model_inputs, randn, c, uc, value_dict = sample(
+        input_path='../../data/jianjin_custom_data/jianjin/1.jpg',
+        num_frames=21,
+        num_steps=10,
+        version="sv3d_u",
+        fps_id=6,
+        motion_bucket_id=127,
+        cond_aug=0.02,
+        seed=23,
+        decoding_t=14,
+        device="cuda",
+        output_folder=None,
+        elevations_deg=10.0,  # For SV3D
+        azimuths_deg=None,  # For SV3D
+        image_frame_ratio=None,
+        verbose=False
+    )
+
+    def denoiser(input, sigma, c):
+        return model.denoiser(
+            model.model, input, sigma, c, **additional_model_inputs
+        )
+
+    version = 'sv3d_u'
+    samples_z = model.sampler(denoiser, randn, cond=c, uc=uc)
+    model.en_and_decode_n_samples_a_time = 14 #decoding_t
+    samples_x = model.decode_first_stage(samples_z)
+    if "sv3d" in version:
+        samples_x[-1:] = value_dict["cond_frames_without_noise"]
+    samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+
+    vid = (
+        (rearrange(samples, "t c h w -> t h w c") * 255)
+        .cpu()
+        .numpy()
+        .astype(np.uint8)
+    )
+    imageio.mimwrite('test.mp4', vid)
