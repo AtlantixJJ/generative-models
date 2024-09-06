@@ -131,18 +131,24 @@ class VideoTransformerBlock(nn.Module):
                              return_attn_probs=self.return_attn_probs)
         else:
             res = self.attn1(self.norm1(x), return_attn_probs=self.return_attn_probs)
-
+        
         if self.return_attn_probs:
-            attn_out, attn_probs = res
+            attn_out, temporal_attn_probs = res
         else:
             attn_out = res
         x = x + attn_out
 
         if self.attn2 is not None:
             if self.switch_temporal_ca_to_sa:
-                x = self.attn2(self.norm2(x)) + x
+                res = self.attn2(self.norm2(x), return_attn_probs=self.return_attn_probs)
             else:
-                x = self.attn2(self.norm2(x), context=context) + x
+                res = self.attn2(self.norm2(x), context=context, return_attn_probs=self.return_attn_probs)
+            if self.return_attn_probs:
+                attn_out, spatial_attn_probs = res
+            else:
+                attn_out = res
+            x = x + attn_out
+
         x_skip = x
         x = self.ff(self.norm3(x))
         if self.is_res:
@@ -152,7 +158,7 @@ class VideoTransformerBlock(nn.Module):
             x, "(b s) t c -> (b t) s c", s=S, b=B // timesteps, c=C, t=timesteps
         )
         if self.return_attn_probs:
-            return x, attn_probs
+            return x, temporal_attn_probs.detach().cpu(), spatial_attn_probs.detach().cpu()
         return x
 
     def get_last_layer(self):
@@ -247,9 +253,10 @@ class SpatialVideoTransformer(SpatialTransformer):
 
     def set_return_attn_probs(self, flag=True):
         self.return_attn_probs = flag
-        # recursive handled by top-level model
-        #for m in self.time_stack:
-        #    m.set_return_attn_probs(flag)
+        for m in self.time_stack:
+            m.set_return_attn_probs(flag)
+        for m in self.transformer_blocks:
+            m.set_return_attn_probs(flag)
 
     def forward(
         self,
@@ -299,23 +306,30 @@ class SpatialVideoTransformer(SpatialTransformer):
         emb = self.time_pos_embed(t_emb)
         emb = emb[:, None, :]
 
-        attn_maps = []
+        self.temporal_attn_maps, self.spatial_attn_maps = [], []
 
         for it_, (block, mix_block) in enumerate(
             zip(self.transformer_blocks, self.time_stack)
         ):
-            x = block(
+            res = block(
                 x,
                 context=spatial_context,
             )
+            if self.return_attn_probs:
+                x, spatial_attns = res
+                self.spatial_attn_maps.extend(spatial_attns)
+            else:
+                x = res
 
             x_mix = x
             x_mix = x_mix + emb
 
             res = mix_block(x_mix, context=time_context, timesteps=timesteps)
-            x, attn_probs = res if self.return_attn_probs else res, None
             if self.return_attn_probs:
-                attn_maps.append(attn_probs)
+                x_mix, temporal_attn, _ = res
+                self.temporal_attn_maps.append(temporal_attn)
+            else:
+                x_mix = res
             x = self.time_mixer(
                 x_spatial=x,
                 x_temporal=x_mix,
@@ -327,6 +341,4 @@ class SpatialVideoTransformer(SpatialTransformer):
         if not self.use_linear:
             x = self.proj_out(x)
         out = x + x_in
-        if self.return_attn_probs:
-            return out, attn_maps
         return out

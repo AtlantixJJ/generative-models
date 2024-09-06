@@ -19,6 +19,50 @@ from scripts.util.detection.nsfw_and_watermark_dectection import DeepFloydDataFi
 from sgm.inference.helpers import embed_watermark
 from sgm.util import default, instantiate_from_config
 from torchvision.transforms import ToTensor
+import torchvision.utils as vutils
+import matplotlib
+import torch.nn.functional as F
+
+
+POSITIVE_COLOR = matplotlib.colormaps["Reds"]
+NEGATIVE_COLOR = matplotlib.colormaps["Blues"]
+def heatmap_numpy(image):
+    """Get the heatmap of the image
+
+    Args:
+        image : A numpy array of shape (N, H, W) and scale in [-1, 1]
+
+    Returns:
+        A image of shape (N, H, W, 3) in [0, 1] scale
+    """
+    image1 = image.copy()
+    mask1 = image1 > 0
+    image1[~mask1] = 0
+
+    image2 = -image.copy()
+    mask2 = image2 > 0
+    image2[~mask2] = 0
+
+    pos_img = POSITIVE_COLOR(image1)[:, :, :, :3]
+    neg_img = NEGATIVE_COLOR(image2)[:, :, :, :3]
+
+    x = np.ones_like(pos_img)
+    x[mask1] = pos_img[mask1]
+    x[mask2] = neg_img[mask2]
+
+    return x
+
+
+def heatmap_torch(image):
+    """Torch tensor version of heatmap_numpy.
+
+    Args:
+        image : torch.Tensor in [N, H, W] in [-1, 1] scale
+    Returns:
+        heatmap : torch.Tensor in [N, 3, H, W] in [0, 1]
+    """
+    x = heatmap_numpy(image.detach().cpu().numpy())
+    return torch.from_numpy(x).type_as(image).permute(0, 3, 1, 2)
 
 
 def sample(
@@ -373,15 +417,101 @@ if __name__ == "__main__":
         verbose=False
     )
 
+    temporal_attn_maps, spatial_attn_maps = [], []
     def denoiser(input, sigma, c):
-        return model.denoiser(
+        result = model.denoiser(
             model.model, input, sigma, c, **additional_model_inputs
         )
+        return result
 
     version = 'sv3d_u'
-    samples_z = model.sampler(denoiser, randn, cond=c, uc=uc)
+    model.model.diffusion_model.set_return_attn_probs(True)
+    #samples_z = model.sampler(denoiser, randn, cond=c, uc=uc)
+
+    num_steps = 10
+    x, s_in, sigmas, num_sigmas, cond, uc = model.sampler.prepare_sampling_loop(
+        randn, c, uc, num_steps)
+    res = []
+    old_denoised = None
+    for i in model.sampler.get_sigma_gen(num_sigmas):
+        print(f'step {i}')
+        x, old_denoised = model.sampler.sampler_step(
+            old_denoised,
+            None if i == 0 else s_in * sigmas[i - 1],
+            s_in * sigmas[i],
+            s_in * sigmas[i + 1],
+            denoiser,
+            x,
+            cond,
+            uc=uc)
+        res.append(old_denoised)
+        if hasattr(model.model.diffusion_model, "temporal_attn_maps"):
+            temporal_attn_maps = model.model.diffusion_model.temporal_attn_maps
+            spatial_attn_maps = model.model.diffusion_model.spatial_attn_maps
+        spatial_attn_maps = spatial_attn_maps[::2]
+
+        cond_idx = 1
+        frame_idx = 3
+        n_frame = 21
+        for j in range(len(temporal_attn_maps)):
+            s_attn = spatial_attn_maps[j][cond_idx * n_frame].sum(0) # (HW, HW)
+            t_attn = temporal_attn_maps[j][cond_idx * s_attn.shape[0]:, :, frame_idx].sum(1) # (HW, T)
+            H = W = int(math.sqrt(s_attn.shape[0]))
+            # take the central patch
+            s_attn = rearrange(s_attn, '(H W) (h w) -> H W h w',
+                               H=H, W=W, h=H, w=W)[H//2, W//2] # (h, w)
+            t_attn = rearrange(t_attn, '(H W) T -> H W T',
+                               H=H, W=W)[H//2, W//2] # (T)
+            ts_attn = t_attn[:, None, None] * s_attn[None] # (T, h, w)
+            ts_attn = ts_attn / ts_attn.abs().max()
+            disp = F.pad(ts_attn[None], (2, 2, 2, 2))[0] # (L, h, w)
+            disp = F.interpolate(heatmap_torch(disp.float()), scale_factor=8)
+            vutils.save_image(disp, f'center{i}_timexpand{frame_idx}_attention{j}.png', nrow=4)
+
+
+
+        """
+        show_frame_idx = 30 # conditional, middle frame
+        for j, attn_map in enumerate(spatial_attn_maps):
+            m = attn_map[show_frame_idx].clone()
+            H = W = int(math.sqrt(m.shape[-1]))
+            m = rearrange(m, 'L (H W) (h w) -> L H W h w', H=H, W=W, h=H, w=W)
+            m = m[:, H//2, W//2]
+            m = m / m.abs().max()
+            m = F.pad(m[None], (2, 2, 2, 2))[0] # (L, h, w)
+            disp = F.interpolate(heatmap_torch(m.float()), scale_factor=16)
+            vutils.save_image(disp, f'center{i}_attention{j}.png', nrow=4)
+
+            m = attn_map[show_frame_idx].clone().sum(0) # take first frame and sum over heads
+            m = rearrange(m, '(H W) (h w) -> H W h w', H=H, W=W, h=H, w=W)
+            mu, std = m.mean(), m.std()
+            m[m > mu + 3 * std] = mu + 3 * std
+            m[m < mu - 3 * std] = mu - 3 * std
+            m = m / m.abs().max()
+            m = rearrange(m, 'H W h w -> (H h) (W w)')
+            disp = heatmap_torch(m[None].float())
+            vutils.save_image(disp, f'spatial{i}_attention{j//2}.png', nrow=2)
+        """
+
+        """
+        for j, attn_map in enumerate(temporal_attn_maps):
+            m = attn_map.float().clone().sum(dim=1)
+            # filter 3std away values
+            mu, std = m.mean(), m.std()
+            m[m > mu + 3 * std] = mu + 3 * std
+            m[m < mu - 3 * std] = mu - 3 * std
+            m = m / m.abs().max()
+            H = W = int(math.sqrt(m.shape[0] / 2))
+            m = F.pad(m, (2, 2, 2, 2))
+            m = rearrange(m, '(b H W) h w -> b (H h) (W w)', H=H, W=W)
+            disp = heatmap_torch(m)
+            vutils.save_image(disp, f'time{i}_attention{j}.png', nrow=2)
+        """
+
+
+    samples_z = res
     model.en_and_decode_n_samples_a_time = 14 #decoding_t
-    samples_x = model.decode_first_stage(samples_z)
+    samples_x = model.decode_first_stage(samples_z[-1])
     if "sv3d" in version:
         samples_x[-1:] = value_dict["cond_frames_without_noise"]
     samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)

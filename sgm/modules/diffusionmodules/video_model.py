@@ -443,9 +443,13 @@ class VideoUNet(nn.Module):
 
     def set_return_attn_probs(self, flag=True):
         self.return_attn_probs = flag
-        for m in self.children():
-            if hasattr(m, 'set_return_attn_probs'):
-                m.set_return_attn_probs(flag)
+        for m1 in self.children():
+            for m2 in m1.children(): 
+                if hasattr(m2, 'set_return_attn_probs'):
+                    m2.set_return_attn_probs(flag)
+                for m3 in m2.children():
+                    if hasattr(m3, 'set_return_attn_probs'):
+                        m3.set_return_attn_probs(flag)
 
     def forward(
         self,
@@ -469,6 +473,7 @@ class VideoUNet(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x
+        temporal_attn_maps, spatial_attn_maps = [], []
         for module in self.input_blocks:
             h = module(
                 h,
@@ -479,6 +484,9 @@ class VideoUNet(nn.Module):
                 num_video_frames=num_video_frames,
             )
             hs.append(h)
+            if len(module) > 1 and self.return_attn_probs and isinstance(module[1], SpatialVideoTransformer):
+                temporal_attn_maps.extend(module[1].temporal_attn_maps)
+                spatial_attn_maps.extend(module[1].spatial_attn_maps)
         h = self.middle_block(
             h,
             emb,
@@ -487,6 +495,10 @@ class VideoUNet(nn.Module):
             time_context=time_context,
             num_video_frames=num_video_frames,
         )
+        if self.return_attn_probs:
+            temporal_attn_maps.extend(self.middle_block[1].temporal_attn_maps)
+            spatial_attn_maps.extend(self.middle_block[1].spatial_attn_maps)
+            
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(
@@ -497,5 +509,11 @@ class VideoUNet(nn.Module):
                 time_context=time_context,
                 num_video_frames=num_video_frames,
             )
+            if len(module) > 1 and isinstance(module[1], SpatialVideoTransformer) and self.return_attn_probs:
+                temporal_attn_maps.extend(module[1].temporal_attn_maps)
+                spatial_attn_maps.extend(module[1].spatial_attn_maps)
         h = h.type(x.dtype)
+        if self.return_attn_probs:
+            self.temporal_attn_maps = temporal_attn_maps
+            self.spatial_attn_maps = spatial_attn_maps
         return self.out(h)

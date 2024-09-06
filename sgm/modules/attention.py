@@ -315,7 +315,19 @@ class CrossAttention(nn.Module):
 
         ## old
         if return_attn_probs:
-            sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+            softmax_scale = 1.0 / math.sqrt(q.shape[-1])
+            # 10368, 5, 21, 64
+            # use another CUDA device to compute
+            q, k, v = q.to('cuda:1'), k.to('cuda:1'), v.to('cuda:1')
+            scores = torch.einsum("bhtd,bhsd->bhts", q, k * softmax_scale)
+            del q, k # reduce peak GPU memory usage
+            attention = torch.softmax(scores, dim=-1, dtype=v.dtype)
+
+            out = torch.einsum("bhts,bhsd->bhtd", attention, v)
+            out = out.to('cuda:0')
+
+            """
+            sim = einsum(q, k, 'b i d, b j d -> b i j') * self.scale
             del q, k
 
             if exists(mask):
@@ -327,7 +339,8 @@ class CrossAttention(nn.Module):
             # attention, what we cannot get enough of
             sim = sim.softmax(dim=-1)
 
-            out = einsum('b i j, b j d -> b i d', sim, v)
+            out = einsum(sim, v, 'b i j, b j d -> b i d')
+            """
         else:
             ## new
             with sdp_kernel(**BACKEND_MAP[self.backend]):
@@ -337,14 +350,14 @@ class CrossAttention(nn.Module):
                 )  # scale is dim_head ** -0.5 per default
 
             del q, k, v
-            out = rearrange(out, "b h n d -> b n (h d)", h=h)
+        out = rearrange(out, "b h n d -> b n (h d)", h=h)
 
         if additional_tokens is not None:
             # remove additional token
             out = out[:, n_tokens_to_mask:]
-        
+
         if return_attn_probs:
-            return self.to_out(out), sim
+            return self.to_out(out), attention
         return self.to_out(out)
 
 
@@ -528,6 +541,11 @@ class BasicTransformerBlock(nn.Module):
         self.checkpoint = checkpoint
         if self.checkpoint:
             logpy.debug(f"{self.__class__.__name__} is using checkpointing")
+        
+        self.return_attn_probs = False
+
+    def set_return_attn_probs(self, flag=True):
+        self.return_attn_probs = flag
 
     def forward(
         self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0
@@ -556,24 +574,39 @@ class BasicTransformerBlock(nn.Module):
     def _forward(
         self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0
     ):
-        x = (
-            self.attn1(
+        attn_maps = []
+
+        res = self.attn1(
                 self.norm1(x),
                 context=context if self.disable_self_attn else None,
                 additional_tokens=additional_tokens,
                 n_times_crossframe_attn_in_self=n_times_crossframe_attn_in_self
                 if not self.disable_self_attn
                 else 0,
+                return_attn_probs=self.return_attn_probs,
             )
-            + x
-        )
-        x = (
-            self.attn2(
-                self.norm2(x), context=context, additional_tokens=additional_tokens
-            )
-            + x
-        )
+
+        if self.return_attn_probs:
+            attn_out, attn_map = res
+            attn_maps.append(attn_map.detach().cpu())
+        else:
+            attn_out = res
+        x = attn_out + x
+
+        res = self.attn2(
+                self.norm2(x), context=context, additional_tokens=additional_tokens,
+                return_attn_probs=self.return_attn_probs)
+        if self.return_attn_probs:
+            attn_out, attn_map = res
+            attn_maps.append(attn_map.detach().cpu())
+        else:
+            attn_out = res
+        x = attn_out + x
+
         x = self.ff(self.norm3(x)) + x
+
+        if self.return_attn_probs:
+            return x, attn_maps
         return x
 
 

@@ -346,6 +346,7 @@ class DPMPP2MSampler(BaseDiffusionSampler):
             x, cond, uc, num_steps
         )
 
+        res = []
         old_denoised = None
         for i in self.get_sigma_gen(num_sigmas):
             x, old_denoised = self.sampler_step(
@@ -356,7 +357,7 @@ class DPMPP2MSampler(BaseDiffusionSampler):
                 denoiser,
                 x,
                 cond,
-                uc=uc,
-            )
+                uc=uc)
+            res.append(old_denoised)
 
         return x

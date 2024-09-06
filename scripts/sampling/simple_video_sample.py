@@ -92,6 +92,10 @@ def sample(
         ), f"Please provide a list of {num_frames} values for azimuths_deg! Given {len(azimuths_deg)}"
         azimuths_rad = [np.deg2rad((a - azimuths_deg[-1]) % 360) for a in azimuths_deg]
         azimuths_rad[:-1].sort()
+
+        # replace with the degrees intend to test
+        azimuth_rad = np.array([0.000, 12.401, 20.060, 32.474, 35.386, 49.617, 72.584, 84.982, 117.442, 137.506, 157.569, 169.617, 172.894, 192.955, 200.618, 253.142, 305.665, 318.064, 330.463, 342.862, 358.188])
+        polar_rad = np.array([118.903, 134.427, 110.487, 90.000, 69.513, 90.000, 107.458, 121.109, 126.870, 117.818, 109.471, 90.000, 68.490, 60.000, 31.788, 25.842, 18.195, 42.833, 58.891, 72.542, 90.000])
     else:
         raise ValueError(f"Version {version} does not exist.")
 
